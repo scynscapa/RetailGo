@@ -5,10 +5,22 @@
 package database
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+type Item struct {
+	Upc         int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	ItemName    string
+	ItemDesc    sql.NullString
+	ItemRetail  float64
+	ItemCost    float64
+	ItemPicture sql.NullString
+}
 
 type User struct {
 	ID        uuid.UUID

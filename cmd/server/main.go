@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -38,6 +39,8 @@ func main() {
 	cfg.dbQueries = database.New(db)
 
 	mux.HandleFunc("GET /api/users", cfg.handleGetUsers)
+	mux.HandleFunc("GET /api/items/{itemUpc}", cfg.handleGetItem)
+	mux.HandleFunc("POST /api/items", cfg.handleCreateItem)
 
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
@@ -95,4 +98,72 @@ func (cfg *apiConfig) handleGetUsers(w http.ResponseWriter, req *http.Request) {
 	}
 
 	respondWithJSON(w, 200, usersJson)
+}
+
+func (cfg *apiConfig) handleGetItem(w http.ResponseWriter, req *http.Request) {
+	upcString := req.PathValue("itemUpc")
+	if upcString == "" {
+		// no item found
+	}
+
+	upc64, err := strconv.ParseInt(upcString, 10, 32)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error parsing upc")
+	}
+	upc := int32(upc64)
+
+	item, err := cfg.dbQueries.GetItemByUpc(req.Context(), upc)
+
+	respondWithJSON(w, 200, item)
+}
+
+func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Upc         int     `json:"upc"`
+		ItemName    string  `json:"item_name"`
+		ItemDesc    string  `json:"item_desc"`
+		ItemRetail  float64 `json:"item_retail"`
+		ItemCost    float64 `json:"item_cost"`
+		ItemPicture string  `json:"item_picture"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		fmt.Printf("Error decoding parameters: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters")
+		return
+	}
+
+	var itemDescNull sql.NullString
+	if params.ItemDesc == "" {
+		itemDescNull = sql.NullString{Valid: false}
+	} else {
+		itemDescNull = sql.NullString{String: params.ItemDesc, Valid: true}
+	}
+	var pictureNull sql.NullString
+	if params.ItemPicture == "" {
+		pictureNull = sql.NullString{Valid: false}
+	} else {
+		pictureNull = sql.NullString{String: params.ItemPicture, Valid: true}
+	}
+
+	itemParams := database.CreateItemParams{
+		Upc:         int32(params.Upc),
+		ItemName:    params.ItemName,
+		ItemDesc:    itemDescNull,
+		ItemRetail:  params.ItemRetail,
+		ItemCost:    params.ItemCost,
+		ItemPicture: pictureNull,
+	}
+
+	item, err := cfg.dbQueries.CreateItem(req.Context(), itemParams)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error creating item")
+		return
+	}
+
+	respondWithJSON(w, 201, item)
 }

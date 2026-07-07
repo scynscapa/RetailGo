@@ -39,6 +39,7 @@ func main() {
 
 	mux.HandleFunc("GET /api/users", cfg.handleGetUsers)
 	mux.HandleFunc("GET /api/items/{itemUpc}", cfg.handleGetItem)
+	mux.HandleFunc("GET /api/items", cfg.handleGetItems)
 	mux.HandleFunc("POST /api/items", cfg.handleCreateItem)
 
 	if err := server.ListenAndServe(); err != nil {
@@ -97,6 +98,18 @@ func (cfg *apiConfig) handleGetUsers(w http.ResponseWriter, req *http.Request) {
 	}
 
 	respondWithJSON(w, 200, usersJson)
+}
+
+func (cfg *apiConfig) handleGetItems(w http.ResponseWriter, req *http.Request) {
+	var items []database.Item
+
+	items, err := cfg.dbQueries.GetItems(req.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error getting items")
+		return
+	}
+
+	respondWithJSON(w, 200, items)
 }
 
 func (cfg *apiConfig) handleGetItem(w http.ResponseWriter, req *http.Request) {

@@ -26,7 +26,7 @@ RETURNING upc, created_at, updated_at, item_name, item_desc, item_retail, item_c
 `
 
 type CreateItemParams struct {
-	Upc         int32
+	Upc         string
 	ItemName    string
 	ItemDesc    sql.NullString
 	ItemRetail  float64

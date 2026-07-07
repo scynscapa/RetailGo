@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -101,25 +100,28 @@ func (cfg *apiConfig) handleGetUsers(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) handleGetItem(w http.ResponseWriter, req *http.Request) {
-	upcString := req.PathValue("itemUpc")
-	if upcString == "" {
+	upc := req.PathValue("itemUpc")
+	if upc == "" {
 		// no item found
 	}
 
-	upc64, err := strconv.ParseInt(upcString, 10, 32)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error parsing upc")
-	}
-	upc := int32(upc64)
+	// upc64, err := strconv.ParseInt(upcString, 10, 32)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Error parsing upc")
+	// }
+	// upc := int32(upc64)
 
 	item, err := cfg.dbQueries.GetItemByUpc(req.Context(), upc)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Falied to get item")
+	}
 
 	respondWithJSON(w, 200, item)
 }
 
 func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Upc         int     `json:"upc"`
+		Upc         string  `json:"upc"`
 		ItemName    string  `json:"item_name"`
 		ItemDesc    string  `json:"item_desc"`
 		ItemRetail  float64 `json:"item_retail"`
@@ -151,7 +153,7 @@ func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request)
 	}
 
 	itemParams := database.CreateItemParams{
-		Upc:         int32(params.Upc),
+		Upc:         params.Upc,
 		ItemName:    params.ItemName,
 		ItemDesc:    itemDescNull,
 		ItemRetail:  params.ItemRetail,

@@ -15,7 +15,7 @@ FROM items
 WHERE upc = $1
 `
 
-func (q *Queries) GetItemByUpc(ctx context.Context, upc int32) (Item, error) {
+func (q *Queries) GetItemByUpc(ctx context.Context, upc string) (Item, error) {
 	row := q.db.QueryRowContext(ctx, getItemByUpc, upc)
 	var i Item
 	err := row.Scan(

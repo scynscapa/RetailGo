@@ -12,7 +12,7 @@ import (
 )
 
 type Item struct {
-	Upc         int32
+	Upc         string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	ItemName    string

@@ -1,6 +1,6 @@
 -- +goose Up
 CREATE TABLE items (
-    upc             INT PRIMARY KEY,
+    upc             TEXT PRIMARY KEY,
     created_at      TIMESTAMP NOT NULL,
     updated_at      TIMESTAMP NOT NULL,
     item_name       TEXT NOT NULL,

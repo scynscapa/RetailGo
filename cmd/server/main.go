@@ -17,6 +17,17 @@ type apiConfig struct {
 	dbQueries *database.Queries
 }
 
+type AccessLevel string
+
+const (
+	AccessUser            AccessLevel = "USER"
+	AccessAssistant       AccessLevel = "ASSISTANT"
+	AccessManager         AccessLevel = "MANAGER"
+	AccessDistrictManager AccessLevel = "DISTRICT"
+	AccessOperations      AccessLevel = "OPS"
+	AccessDev             AccessLevel = "DEV"
+)
+
 func main() {
 	fmt.Println("Starting RetailGo server...")
 
@@ -38,6 +49,7 @@ func main() {
 	cfg.dbQueries = database.New(db)
 
 	mux.HandleFunc("GET /api/users", cfg.handleGetUsers)
+	mux.HandleFunc("POST /api/users", cfg.handleCreateUser)
 	mux.HandleFunc("GET /api/items/{itemUpc}", cfg.handleGetItem)
 	mux.HandleFunc("GET /api/items", cfg.handleGetItems)
 	mux.HandleFunc("POST /api/items", cfg.handleCreateItem)
@@ -47,7 +59,7 @@ func main() {
 	}
 }
 
-func respondWithError(w http.ResponseWriter, code int, msg string) {
+func respondWithError(w http.ResponseWriter, code int, msg string, errorReceived error) {
 	type errorReturn struct {
 		Error string `json:"error"`
 	}
@@ -62,6 +74,10 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(data)
+
+	if errorReceived != nil {
+		log.Printf("%s: %v", msg, errorReceived)
+	}
 }
 
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
@@ -86,18 +102,45 @@ func (cfg *apiConfig) handleGetUsers(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	usersJson := make([]database.User, len(users))
-	var userJson database.User
+	respondWithJSON(w, 200, users)
+}
 
-	for i, user := range users {
-		userJson.ID = user.ID
-		userJson.CreatedAt = user.CreatedAt
-		userJson.UpdatedAt = user.UpdatedAt
-
-		usersJson[i] = userJson
+func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		AccessLevel string `json:"access_level"`
+		FirstName   string `json:"first_name"`
+		LastName    string `json:"last_name"`
 	}
 
-	respondWithJSON(w, 200, usersJson)
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error decoding user", err)
+		return
+	}
+
+	// check if access level input is valid
+	accLevel := AccessLevel(params.AccessLevel)
+	if accLevel.Valid() != true {
+		respondWithError(w, http.StatusBadRequest, "Invalid Access Level", nil)
+		return
+	}
+
+	userParams := database.CreateUserParams{
+		AccessLevel: params.AccessLevel,
+		FirstName:   params.FirstName,
+		LastName:    params.LastName,
+	}
+
+	user, err := cfg.dbQueries.CreateUser(req.Context(), userParams)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error creating user", err)
+		return
+	}
+
+	respondWithJSON(w, 201, user)
 }
 
 func (cfg *apiConfig) handleGetItems(w http.ResponseWriter, req *http.Request) {
@@ -105,7 +148,7 @@ func (cfg *apiConfig) handleGetItems(w http.ResponseWriter, req *http.Request) {
 
 	items, err := cfg.dbQueries.GetItems(req.Context())
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error getting items")
+		respondWithError(w, http.StatusInternalServerError, "Error getting items", err)
 		return
 	}
 
@@ -118,15 +161,9 @@ func (cfg *apiConfig) handleGetItem(w http.ResponseWriter, req *http.Request) {
 		// no item found
 	}
 
-	// upc64, err := strconv.ParseInt(upcString, 10, 32)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Error parsing upc")
-	// }
-	// upc := int32(upc64)
-
 	item, err := cfg.dbQueries.GetItemByUpc(req.Context(), upc)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Falied to get item")
+		respondWithError(w, http.StatusInternalServerError, "Falied to get item", err)
 	}
 
 	respondWithJSON(w, 200, item)
@@ -148,7 +185,7 @@ func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request)
 	err := decoder.Decode(&params)
 	if err != nil {
 		fmt.Printf("Error decoding parameters: %v\n", err)
-		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters")
+		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters", err)
 		return
 	}
 
@@ -176,9 +213,18 @@ func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request)
 
 	item, err := cfg.dbQueries.CreateItem(req.Context(), itemParams)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error creating item")
+		respondWithError(w, http.StatusInternalServerError, "Error creating item", err)
 		return
 	}
 
 	respondWithJSON(w, 201, item)
+}
+
+func (acc AccessLevel) Valid() bool {
+	// check if an AccessLevel is valid for user creation
+	switch acc {
+	case AccessUser, AccessAssistant, AccessManager, AccessDistrictManager, AccessOperations, AccessDev:
+		return true
+	}
+	return false
 }

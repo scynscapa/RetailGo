@@ -12,7 +12,7 @@ import (
 )
 
 const getUserById = `-- name: GetUserById :one
-SELECT id, created_at, updated_at
+SELECT id, created_at, updated_at, access_level, first_name, last_name
 FROM users
 WHERE id = $1
 `
@@ -20,6 +20,13 @@ WHERE id = $1
 func (q *Queries) GetUserById(ctx context.Context, id uuid.UUID) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserById, id)
 	var i User
-	err := row.Scan(&i.ID, &i.CreatedAt, &i.UpdatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AccessLevel,
+		&i.FirstName,
+		&i.LastName,
+	)
 	return i, err
 }

@@ -20,6 +20,20 @@ type Item struct {
 	ItemRetail  float64
 	ItemCost    float64
 	ItemPicture sql.NullString
+	ItemID      sql.NullInt32
+}
+
+type Transaction struct {
+	TransactionID   int32
+	CustomerID      int32
+	TransactionDate time.Time
+}
+
+type TransactionItem struct {
+	ItemID        int32
+	TransactionID int32
+	Quantity      int32
+	Price         float64
 }
 
 type User struct {

@@ -10,7 +10,7 @@ import (
 )
 
 const getItemByUpc = `-- name: GetItemByUpc :one
-SELECT upc, created_at, updated_at, item_name, item_desc, item_retail, item_cost, item_picture
+SELECT upc, created_at, updated_at, item_name, item_desc, item_retail, item_cost, item_picture, item_id
 FROM items
 WHERE upc = $1
 `
@@ -27,6 +27,7 @@ func (q *Queries) GetItemByUpc(ctx context.Context, upc string) (Item, error) {
 		&i.ItemRetail,
 		&i.ItemCost,
 		&i.ItemPicture,
+		&i.ItemID,
 	)
 	return i, err
 }

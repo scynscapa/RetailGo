@@ -10,7 +10,7 @@ import (
 )
 
 const getItems = `-- name: GetItems :many
-SELECT upc, created_at, updated_at, item_name, item_desc, item_retail, item_cost, item_picture
+SELECT upc, created_at, updated_at, item_name, item_desc, item_retail, item_cost, item_picture, item_id
 FROM items
 `
 
@@ -32,6 +32,7 @@ func (q *Queries) GetItems(ctx context.Context) ([]Item, error) {
 			&i.ItemRetail,
 			&i.ItemCost,
 			&i.ItemPicture,
+			&i.ItemID,
 		); err != nil {
 			return nil, err
 		}

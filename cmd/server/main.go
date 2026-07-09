@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,10 +69,15 @@ func main() {
 	privateMux.Use(cfg.AuthMiddleware)
 
 	privateMux.HandleFunc("/users", cfg.HandleGetUsers).Methods("GET")
+	publicMux.HandleFunc("/users", cfg.HandleCreateUser).Methods("POST")
+
 	privateMux.HandleFunc("/items/{itemUpc}", cfg.HandleGetItem).Methods("GET")
 	privateMux.HandleFunc("/items", cfg.HandleGetItems).Methods("GET")
 	privateMux.HandleFunc("/items", cfg.HandleCreateItem).Methods("POST")
-	privateMux.HandleFunc("/users", cfg.HandleCreateUser).Methods("POST")
+
+	privateMux.HandleFunc("/transactions", cfg.handleCreateTrans).Methods("POST")
+	privateMux.HandleFunc("/transactions/{transId}", cfg.handleGetTransById).Methods("GET")
+	privateMux.HandleFunc("/transactions/{transId}", cfg.handleAddItemTrans).Methods("POST")
 
 	publicMux.HandleFunc("/login", cfg.LoginUser).Methods("POST")
 
@@ -209,6 +215,8 @@ func (cfg *apiConfig) HandleGetItem(w http.ResponseWriter, req *http.Request) {
 	upc := req.PathValue("itemUpc")
 	if upc == "" {
 		// no item found
+		RespondWithError(w, http.StatusNotFound, "Item not found", nil)
+		return
 	}
 
 	item, err := cfg.dbQueries.GetItemByUpc(req.Context(), upc)
@@ -288,6 +296,11 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.Active == false {
+		RespondWithError(w, http.StatusUnauthorized, "User not active", nil)
+		return
+	}
+
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(creds.Password))
 	if err != nil {
 		RespondWithError(w, http.StatusUnauthorized, "Invalid password", nil)
@@ -344,4 +357,91 @@ func (cfg *apiConfig) AuthMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (cfg *apiConfig) handleGetTransById(w http.ResponseWriter, req *http.Request) {
+	vars := mux.Vars(req)
+	transIdString := vars["transId"]
+	transIdInt, err := strconv.Atoi(transIdString)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Error converting transaction ID", nil)
+		return
+	}
+	transId := int32(transIdInt)
+
+	transaction, err := cfg.dbQueries.GetTransById(req.Context(), transId)
+
+	RespondWithJSON(w, 200, transaction)
+}
+
+func (cfg *apiConfig) handleCreateTrans(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		CustomerID int32 `json:"customer_id"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error decoding transaction", err)
+		return
+	}
+
+	customerId := params.CustomerID
+
+	trans, err := cfg.dbQueries.CreateTrans(req.Context(), customerId)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error creating transaction", err)
+		return
+	}
+
+	RespondWithJSON(w, 201, trans)
+}
+
+func (cfg *apiConfig) handleAddItemTrans(w http.ResponseWriter, req *http.Request) {
+	vars := mux.Vars(req)
+	transIdString := vars["transId"]
+	transIdInt, err := strconv.Atoi(transIdString)
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Error converting transaction ID", nil)
+		return
+	}
+	transId := int32(transIdInt)
+
+	type parameters struct {
+		ItemID   int32   `json:"item_id"`
+		Quantity int32   `json:"quantity"`
+		Price    float64 `json:"price"` // TODO: add function to look up item by itemId and retrieve price
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+
+	err = decoder.Decode(&params)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error decoding transaction add", err)
+		return
+	}
+
+	transParams := database.AddItemTransParams{
+		ItemID:        params.ItemID,
+		TransactionID: transId,
+		Quantity:      params.Quantity,
+		Price:         params.Price,
+	}
+
+	_, err = cfg.dbQueries.AddItemTrans(req.Context(), transParams)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error adding items", err)
+		return
+	}
+
+	transaction, err := cfg.dbQueries.GetTransById(req.Context(), transId)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error retrieving transaction", err)
+		return
+	}
+
+	RespondWithJSON(w, 201, transaction)
 }

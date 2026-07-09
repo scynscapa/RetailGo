@@ -22,7 +22,7 @@ VALUES (
     $5,
     $6
 )
-RETURNING upc, created_at, updated_at, item_name, item_desc, item_retail, item_cost, item_picture
+RETURNING upc, created_at, updated_at, item_name, item_desc, item_retail, item_cost, item_picture, item_id
 `
 
 type CreateItemParams struct {
@@ -53,6 +53,7 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) (Item, e
 		&i.ItemRetail,
 		&i.ItemCost,
 		&i.ItemPicture,
+		&i.ItemID,
 	)
 	return i, err
 }

@@ -10,26 +10,39 @@ import (
 )
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (id, created_at, updated_at, access_level, first_name, last_name)
+INSERT INTO users (id, created_at, updated_at, access_level, first_name, last_name, password_hash, user_name, active)
 VALUES (
     gen_random_uuid(),
     NOW(),
     NOW(),
     $1,
     $2,
-    $3
+    $3,
+    $4,
+    $5,
+    $6
 )
-RETURNING id, created_at, updated_at, access_level, first_name, last_name
+RETURNING id, created_at, updated_at, access_level, first_name, last_name, password_hash, active, user_name
 `
 
 type CreateUserParams struct {
-	AccessLevel string
-	FirstName   string
-	LastName    string
+	AccessLevel  string
+	FirstName    string
+	LastName     string
+	PasswordHash string
+	UserName     string
+	Active       bool
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
-	row := q.db.QueryRowContext(ctx, createUser, arg.AccessLevel, arg.FirstName, arg.LastName)
+	row := q.db.QueryRowContext(ctx, createUser,
+		arg.AccessLevel,
+		arg.FirstName,
+		arg.LastName,
+		arg.PasswordHash,
+		arg.UserName,
+		arg.Active,
+	)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -38,6 +51,9 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.AccessLevel,
 		&i.FirstName,
 		&i.LastName,
+		&i.PasswordHash,
+		&i.Active,
+		&i.UserName,
 	)
 	return i, err
 }

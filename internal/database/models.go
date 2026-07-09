@@ -23,10 +23,13 @@ type Item struct {
 }
 
 type User struct {
-	ID          uuid.UUID
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	AccessLevel string
-	FirstName   string
-	LastName    string
+	ID           uuid.UUID
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	AccessLevel  string
+	FirstName    string
+	LastName     string
+	PasswordHash string
+	Active       bool
+	UserName     string
 }

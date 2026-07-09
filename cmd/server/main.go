@@ -7,15 +7,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+
 	"github.com/scynscapa/RetailGo/internal/database"
 )
-
-type apiConfig struct {
-	dbQueries *database.Queries
-}
 
 type AccessLevel string
 
@@ -28,6 +31,17 @@ const (
 	AccessDev             AccessLevel = "DEV"
 )
 
+type apiConfig struct {
+	dbQueries *database.Queries
+}
+
+type Claims struct {
+	Username string `json:"username"`
+	jwt.RegisteredClaims
+}
+
+var jwtKey = []byte("skdhfowieulkjhggfdtytyiiubjbkncl")
+
 func main() {
 	fmt.Println("Starting RetailGo server...")
 
@@ -39,27 +53,37 @@ func main() {
 		log.Fatalf("Error opening database: %s", err)
 	}
 
-	mux := http.NewServeMux()
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
-	}
+	mux := mux.NewRouter()
+	// mux.Use(AuthMiddleware)
+
+	publicMux := mux.PathPrefix("/public").Subrouter()
+	privateMux := mux.PathPrefix("/api/v1").Subrouter()
+	privateMux.Use(AuthMiddleware)
 
 	cfg := apiConfig{}
 	cfg.dbQueries = database.New(db)
 
-	mux.HandleFunc("GET /api/users", cfg.handleGetUsers)
-	mux.HandleFunc("POST /api/users", cfg.handleCreateUser)
-	mux.HandleFunc("GET /api/items/{itemUpc}", cfg.handleGetItem)
-	mux.HandleFunc("GET /api/items", cfg.handleGetItems)
-	mux.HandleFunc("POST /api/items", cfg.handleCreateItem)
+	privateMux.HandleFunc("/users", cfg.HandleGetUsers).Methods("GET")
+	privateMux.HandleFunc("/items/{itemUpc}", cfg.HandleGetItem).Methods("GET")
+	privateMux.HandleFunc("/items", cfg.HandleGetItems).Methods("GET")
+	privateMux.HandleFunc("/items", cfg.HandleCreateItem).Methods("POST")
+	privateMux.HandleFunc("/users", cfg.HandleCreateUser).Methods("POST")
 
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
-	}
+	publicMux.HandleFunc("/login", cfg.LoginUser).Methods("POST")
+
+	http.ListenAndServe(":8080", mux)
 }
 
-func respondWithError(w http.ResponseWriter, code int, msg string, errorReceived error) {
+func (acc AccessLevel) accessValid() bool {
+	// check if an AccessLevel is valid for user creation
+	switch acc {
+	case AccessUser, AccessAssistant, AccessManager, AccessDistrictManager, AccessOperations, AccessDev:
+		return true
+	}
+	return false
+}
+
+func RespondWithError(w http.ResponseWriter, code int, msg string, errorReceived error) {
 	type errorReturn struct {
 		Error string `json:"error"`
 	}
@@ -80,7 +104,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string, errorReceived
 	}
 }
 
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+func RespondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
@@ -92,24 +116,33 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Write(data)
 }
 
-func (cfg *apiConfig) handleGetUsers(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) HandleGetUsers(w http.ResponseWriter, req *http.Request) {
 	var users []database.User
 
 	users, err := cfg.dbQueries.GetUsers(req.Context())
+
+	// hide password from result
+	for i := range len(users) {
+		users[i].PasswordHash = ""
+	}
+
 	if err != nil {
 		log.Printf("Error getting users: %v", err)
 		w.WriteHeader(500)
 		return
 	}
 
-	respondWithJSON(w, 200, users)
+	RespondWithJSON(w, 200, users)
 }
 
-func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
 		AccessLevel string `json:"access_level"`
 		FirstName   string `json:"first_name"`
 		LastName    string `json:"last_name"`
+		Password    string `json:"password"`
+		Active      bool   `json:"active"`
+		Username    string `json:"user_name"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -117,45 +150,58 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, req *http.Request)
 
 	err := decoder.Decode(&params)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error decoding user", err)
+		RespondWithError(w, http.StatusInternalServerError, "Error decoding user", err)
 		return
 	}
 
 	// check if access level input is valid
 	accLevel := AccessLevel(params.AccessLevel)
-	if accLevel.Valid() != true {
-		respondWithError(w, http.StatusBadRequest, "Invalid Access Level", nil)
+	if accLevel.accessValid() != true {
+		RespondWithError(w, http.StatusBadRequest, "Invalid Access Level", nil)
+		return
+	}
+
+	// create hashed password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(params.Password), bcrypt.DefaultCost)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error hashing password", err)
 		return
 	}
 
 	userParams := database.CreateUserParams{
-		AccessLevel: params.AccessLevel,
-		FirstName:   params.FirstName,
-		LastName:    params.LastName,
+		AccessLevel:  params.AccessLevel,
+		FirstName:    params.FirstName,
+		LastName:     params.LastName,
+		PasswordHash: string(hashedPassword),
+		Active:       params.Active,
+		UserName:     params.Username,
 	}
 
 	user, err := cfg.dbQueries.CreateUser(req.Context(), userParams)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error creating user", err)
+		RespondWithError(w, http.StatusInternalServerError, "Error creating user", err)
 		return
 	}
 
-	respondWithJSON(w, 201, user)
+	// hide password hash from creation return
+	user.PasswordHash = ""
+
+	RespondWithJSON(w, 201, user)
 }
 
-func (cfg *apiConfig) handleGetItems(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) HandleGetItems(w http.ResponseWriter, req *http.Request) {
 	var items []database.Item
 
 	items, err := cfg.dbQueries.GetItems(req.Context())
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error getting items", err)
+		RespondWithError(w, http.StatusInternalServerError, "Error getting items", err)
 		return
 	}
 
-	respondWithJSON(w, 200, items)
+	RespondWithJSON(w, 200, items)
 }
 
-func (cfg *apiConfig) handleGetItem(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) HandleGetItem(w http.ResponseWriter, req *http.Request) {
 	upc := req.PathValue("itemUpc")
 	if upc == "" {
 		// no item found
@@ -163,13 +209,13 @@ func (cfg *apiConfig) handleGetItem(w http.ResponseWriter, req *http.Request) {
 
 	item, err := cfg.dbQueries.GetItemByUpc(req.Context(), upc)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Falied to get item", err)
+		RespondWithError(w, http.StatusInternalServerError, "Falied to get item", err)
 	}
 
-	respondWithJSON(w, 200, item)
+	RespondWithJSON(w, 200, item)
 }
 
-func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) HandleCreateItem(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
 		Upc         string  `json:"upc"`
 		ItemName    string  `json:"item_name"`
@@ -185,7 +231,7 @@ func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request)
 	err := decoder.Decode(&params)
 	if err != nil {
 		fmt.Printf("Error decoding parameters: %v\n", err)
-		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters", err)
+		RespondWithError(w, http.StatusInternalServerError, "Error decoding parameters", err)
 		return
 	}
 
@@ -213,18 +259,85 @@ func (cfg *apiConfig) handleCreateItem(w http.ResponseWriter, req *http.Request)
 
 	item, err := cfg.dbQueries.CreateItem(req.Context(), itemParams)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error creating item", err)
+		RespondWithError(w, http.StatusInternalServerError, "Error creating item", err)
 		return
 	}
 
-	respondWithJSON(w, 201, item)
+	RespondWithJSON(w, 201, item)
 }
 
-func (acc AccessLevel) Valid() bool {
-	// check if an AccessLevel is valid for user creation
-	switch acc {
-	case AccessUser, AccessAssistant, AccessManager, AccessDistrictManager, AccessOperations, AccessDev:
-		return true
+func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
-	return false
+
+	err := json.NewDecoder(r.Body).Decode(&creds)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error decoding login", err)
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByUserName(r.Context(), creds.Username)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error retrieving user", err)
+		return
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(creds.Password))
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "Invalid password", nil)
+		return
+	}
+
+	expirationTime := time.Now().Add(24 * time.Hour)
+	claims := &Claims{
+		Username: creds.Username,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtKey)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Could not create token", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": tokenString,
+	})
+}
+
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			RespondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
+			return
+		}
+
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+		claims := &Claims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+			return jwtKey, nil
+		})
+
+		if err != nil {
+			if err == jwt.ErrSignatureInvalid {
+				RespondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
+				return
+			}
+			RespondWithError(w, http.StatusBadRequest, "Bad Request", nil)
+			return
+		}
+		if !token.Valid {
+			RespondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

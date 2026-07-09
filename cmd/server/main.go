@@ -33,6 +33,7 @@ const (
 
 type apiConfig struct {
 	dbQueries *database.Queries
+	jwtKey    []byte
 }
 
 type Claims struct {
@@ -40,28 +41,31 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-var jwtKey = []byte("skdhfowieulkjhggfdtytyiiubjbkncl")
-
 func main() {
 	fmt.Println("Starting RetailGo server...")
 
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	secretKey := os.Getenv("JWT_SECRET_KEY")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("Error opening database: %s", err)
 	}
 
-	mux := mux.NewRouter()
-	// mux.Use(AuthMiddleware)
-
-	publicMux := mux.PathPrefix("/public").Subrouter()
-	privateMux := mux.PathPrefix("/api/v1").Subrouter()
-	privateMux.Use(AuthMiddleware)
+	jwtKey := []byte(secretKey)
 
 	cfg := apiConfig{}
 	cfg.dbQueries = database.New(db)
+	cfg.jwtKey = jwtKey
+
+	mux := mux.NewRouter()
+
+	// allow some paths for unauthed use - mostly for logging in
+	publicMux := mux.PathPrefix("/public").Subrouter()
+
+	privateMux := mux.PathPrefix("/api/v1").Subrouter()
+	privateMux.Use(cfg.AuthMiddleware)
 
 	privateMux.HandleFunc("/users", cfg.HandleGetUsers).Methods("GET")
 	privateMux.HandleFunc("/items/{itemUpc}", cfg.HandleGetItem).Methods("GET")
@@ -298,7 +302,7 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtKey)
+	tokenString, err := token.SignedString(cfg.jwtKey)
 	if err != nil {
 		RespondWithError(w, http.StatusInternalServerError, "Could not create token", err)
 		return
@@ -310,7 +314,7 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func AuthMiddleware(next http.Handler) http.Handler {
+func (cfg *apiConfig) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
@@ -322,7 +326,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		claims := &Claims{}
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			return jwtKey, nil
+			return cfg.jwtKey, nil
 		})
 
 		if err != nil {

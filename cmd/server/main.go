@@ -410,9 +410,8 @@ func (cfg *apiConfig) handleAddItemTrans(w http.ResponseWriter, req *http.Reques
 	transId := int32(transIdInt)
 
 	type parameters struct {
-		ItemID   int32   `json:"item_id"`
-		Quantity int32   `json:"quantity"`
-		Price    float64 `json:"price"` // TODO: add function to look up item by itemId and retrieve price
+		Upc      string `json:"upc"`
+		Quantity int32  `json:"quantity"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -424,11 +423,14 @@ func (cfg *apiConfig) handleAddItemTrans(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
+	itemToAdd, err := cfg.dbQueries.GetItemByUpc(req.Context(), params.Upc)
+	totalPrice := itemToAdd.ItemRetail * float64(params.Quantity)
+
 	transParams := database.AddItemTransParams{
-		ItemID:        params.ItemID,
+		ItemID:        itemToAdd.ItemID,
 		TransactionID: transId,
 		Quantity:      params.Quantity,
-		Price:         params.Price,
+		Price:         totalPrice,
 	}
 
 	_, err = cfg.dbQueries.AddItemTrans(req.Context(), transParams)

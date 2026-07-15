@@ -6,4 +6,5 @@ VALUES (
     $3,
     $4
 )
+ON CONFLICT (item_id) DO UPDATE SET quantity = transaction_items.quantity + EXCLUDED.quantity
 RETURNING *;

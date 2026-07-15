@@ -20,7 +20,7 @@ type Item struct {
 	ItemRetail  float64
 	ItemCost    float64
 	ItemPicture sql.NullString
-	ItemID      sql.NullInt32
+	ItemID      int32
 }
 
 type Transaction struct {

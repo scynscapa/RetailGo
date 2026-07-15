@@ -26,7 +26,7 @@ RETURNING id, created_at, updated_at, access_level, first_name, last_name, passw
 `
 
 type CreateUserParams struct {
-	AccessLevel  string
+	AccessLevel  int32
 	FirstName    string
 	LastName     string
 	PasswordHash string

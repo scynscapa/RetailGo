@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -21,15 +22,26 @@ import (
 	"github.com/scynscapa/RetailGo/internal/database"
 )
 
-type AccessLevel string
+// type AccessLevel string
+
+// const (
+// 	AccessUser            AccessLevel = "USER"
+// 	AccessAssistant       AccessLevel = "ASSISTANT"
+// 	AccessManager         AccessLevel = "MANAGER"
+// 	AccessDistrictManager AccessLevel = "DISTRICT"
+// 	AccessOperations      AccessLevel = "OPS"
+// 	AccessDev             AccessLevel = "DEV"
+// )
+
+type AccessLevel int
 
 const (
-	AccessUser            AccessLevel = "USER"
-	AccessAssistant       AccessLevel = "ASSISTANT"
-	AccessManager         AccessLevel = "MANAGER"
-	AccessDistrictManager AccessLevel = "DISTRICT"
-	AccessOperations      AccessLevel = "OPS"
-	AccessDev             AccessLevel = "DEV"
+	AccessUser AccessLevel = iota
+	AccessAssistant
+	AccessManager
+	AccessDistrictManager
+	AccessOperations
+	AccessDev
 )
 
 type apiConfig struct {
@@ -69,7 +81,7 @@ func main() {
 	privateMux.Use(cfg.AuthMiddleware)
 
 	privateMux.HandleFunc("/users", cfg.HandleGetUsers).Methods("GET")
-	publicMux.HandleFunc("/users", cfg.HandleCreateUser).Methods("POST")
+	privateMux.HandleFunc("/users", cfg.HandleCreateUser).Methods("POST")
 
 	privateMux.HandleFunc("/items/{itemUpc}", cfg.HandleGetItem).Methods("GET")
 	privateMux.HandleFunc("/items", cfg.HandleGetItems).Methods("GET")
@@ -84,12 +96,27 @@ func main() {
 	http.ListenAndServe(":8080", mux)
 }
 
-func (acc AccessLevel) accessValid() bool {
+func (acc AccessLevel) accessLevelValid() bool {
 	// check if an AccessLevel is valid for user creation
 	switch acc {
 	case AccessUser, AccessAssistant, AccessManager, AccessDistrictManager, AccessOperations, AccessDev:
 		return true
 	}
+	return false
+}
+
+func (cfg *apiConfig) allowedToAccess(w http.ResponseWriter, ctx context.Context, requiredLevel AccessLevel) bool {
+	user, err := cfg.dbQueries.GetUserByUserName(ctx, ctx.Value("userName").(string))
+	if err != nil {
+		log.Printf("Error in allowedToAccess: %v", err)
+		return false
+	}
+
+	if AccessLevel(user.AccessLevel) >= requiredLevel {
+		return true
+	}
+
+	RespondWithError(w, http.StatusUnauthorized, "User AccessLevel invalid", nil)
 	return false
 }
 
@@ -127,6 +154,10 @@ func RespondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func (cfg *apiConfig) HandleGetUsers(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessAssistant) {
+		return
+	}
+
 	var users []database.User
 
 	users, err := cfg.dbQueries.GetUsers(req.Context())
@@ -146,8 +177,12 @@ func (cfg *apiConfig) HandleGetUsers(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessAssistant) {
+		return
+	}
+
 	type parameters struct {
-		AccessLevel string `json:"access_level"`
+		AccessLevel int    `json:"access_level"`
 		FirstName   string `json:"first_name"`
 		LastName    string `json:"last_name"`
 		Password    string `json:"password"`
@@ -166,7 +201,7 @@ func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request)
 
 	// check if access level input is valid
 	accLevel := AccessLevel(params.AccessLevel)
-	if accLevel.accessValid() != true {
+	if accLevel.accessLevelValid() != true {
 		RespondWithError(w, http.StatusBadRequest, "Invalid Access Level", nil)
 		return
 	}
@@ -179,7 +214,7 @@ func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request)
 	}
 
 	userParams := database.CreateUserParams{
-		AccessLevel:  params.AccessLevel,
+		AccessLevel:  int32(params.AccessLevel),
 		FirstName:    params.FirstName,
 		LastName:     params.LastName,
 		PasswordHash: string(hashedPassword),
@@ -196,10 +231,14 @@ func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request)
 	// hide password hash from creation return
 	user.PasswordHash = ""
 
-	RespondWithJSON(w, 201, user)
+	RespondWithJSON(w, http.StatusCreated, user)
 }
 
 func (cfg *apiConfig) HandleGetItems(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessUser) {
+		return
+	}
+
 	var items []database.Item
 
 	items, err := cfg.dbQueries.GetItems(req.Context())
@@ -212,6 +251,10 @@ func (cfg *apiConfig) HandleGetItems(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) HandleGetItem(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessUser) {
+		return
+	}
+
 	upc := req.PathValue("itemUpc")
 	if upc == "" {
 		// no item found
@@ -228,6 +271,10 @@ func (cfg *apiConfig) HandleGetItem(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) HandleCreateItem(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessAssistant) {
+		return
+	}
+
 	type parameters struct {
 		Upc         string  `json:"upc"`
 		ItemName    string  `json:"item_name"`
@@ -275,7 +322,7 @@ func (cfg *apiConfig) HandleCreateItem(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	RespondWithJSON(w, 201, item)
+	RespondWithJSON(w, http.StatusCreated, item)
 }
 
 func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
@@ -355,11 +402,20 @@ func (cfg *apiConfig) AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		parent := r.Context()
+		ctx := context.WithValue(parent, "userName", claims.Username)
+		req := r.WithContext(ctx)
+		next.ServeHTTP(w, req)
+
+		// next.ServeHTTP(w, r)
 	})
 }
 
 func (cfg *apiConfig) handleGetTransById(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessAssistant) {
+		return
+	}
+
 	vars := mux.Vars(req)
 	transIdString := vars["transId"]
 	transIdInt, err := strconv.Atoi(transIdString)
@@ -375,6 +431,10 @@ func (cfg *apiConfig) handleGetTransById(w http.ResponseWriter, req *http.Reques
 }
 
 func (cfg *apiConfig) handleCreateTrans(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessUser) {
+		return
+	}
+
 	type parameters struct {
 		CustomerID int32 `json:"customer_id"`
 	}
@@ -396,10 +456,14 @@ func (cfg *apiConfig) handleCreateTrans(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	RespondWithJSON(w, 201, trans)
+	RespondWithJSON(w, http.StatusCreated, trans)
 }
 
 func (cfg *apiConfig) handleAddItemTrans(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessUser) {
+		return
+	}
+
 	vars := mux.Vars(req)
 	transIdString := vars["transId"]
 	transIdInt, err := strconv.Atoi(transIdString)
@@ -445,5 +509,5 @@ func (cfg *apiConfig) handleAddItemTrans(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	RespondWithJSON(w, 201, transaction)
+	RespondWithJSON(w, http.StatusCreated, transaction)
 }

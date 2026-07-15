@@ -40,7 +40,7 @@ type User struct {
 	ID           uuid.UUID
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
-	AccessLevel  string
+	AccessLevel  int32
 	FirstName    string
 	LastName     string
 	PasswordHash string

@@ -199,6 +199,17 @@ func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	// check if user is allowed to assign provided AccessLevel
+	callingUser, err := cfg.dbQueries.GetUserByUserName(req.Context(), req.Context().Value("userName").(string))
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error creating user", err)
+		return
+	}
+	if callingUser.AccessLevel <= int32(params.AccessLevel) {
+		RespondWithError(w, http.StatusUnauthorized, "Invalid AccessLevel", nil)
+		return
+	}
+
 	// check if access level input is valid
 	accLevel := AccessLevel(params.AccessLevel)
 	if accLevel.accessLevelValid() != true {

@@ -27,6 +27,7 @@ Prerequisites:
 ---
 
 ### Usage
+- Starting server: `go run ./cmd/server` from root directory
 - Access Levels for users
 
     0. User
@@ -86,3 +87,8 @@ Prerequisites:
             "quantity": 2
         }
     ```
+
+---
+
+## Client
+Not yet implemented

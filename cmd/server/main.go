@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/google/uuid"
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"golang.org/x/crypto/bcrypt"
 
@@ -54,6 +56,16 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+type RefreshClaims struct {
+	Username  string `json:"username"`
+	TokenType string `json:"token_type"` // Must be "refresh"
+	jwt.RegisteredClaims
+}
+
+type contextKey string
+
+const userNameKey contextKey = "userName"
+
 func main() {
 	fmt.Println("Starting RetailGo server...")
 
@@ -80,11 +92,11 @@ func main() {
 	privateMux := mux.PathPrefix("/api/v1").Subrouter()
 	privateMux.Use(cfg.AuthMiddleware)
 
-	privateMux.HandleFunc("/users", cfg.HandleGetUsers).Methods("GET")
+	privateMux.HandleFunc("/users", cfg.HandleGetUsers).Methods("GET", "OPTIONS")
 	privateMux.HandleFunc("/users", cfg.HandleCreateUser).Methods("POST")
 
 	privateMux.HandleFunc("/items/{itemUpc}", cfg.HandleGetItem).Methods("GET")
-	privateMux.HandleFunc("/items", cfg.HandleGetItems).Methods("GET")
+	privateMux.HandleFunc("/items", cfg.HandleGetItems).Methods("GET", "OPTIONS")
 	privateMux.HandleFunc("/items", cfg.HandleCreateItem).Methods("POST")
 
 	privateMux.HandleFunc("/transactions", cfg.handleCreateTrans).Methods("POST")
@@ -92,8 +104,17 @@ func main() {
 	privateMux.HandleFunc("/transactions/{transId}", cfg.handleAddItemTrans).Methods("POST")
 
 	publicMux.HandleFunc("/login", cfg.LoginUser).Methods("POST")
+	publicMux.HandleFunc("/refresh", cfg.HandleRefresh).Methods("POST", "OPTIONS")
 
-	http.ListenAndServe(":8080", mux)
+	// Needed for CORS
+	corsOpts := handlers.AllowedOrigins([]string{"http://localhost:5173"})
+	credentialsOk := handlers.AllowCredentials()
+	methods := handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS"})
+	headers := handlers.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization"})
+
+	http.ListenAndServe(":8080", handlers.CORS(corsOpts, credentialsOk, methods, headers)(mux))
+
+	// http.ListenAndServe(":8080", mux)
 }
 
 func (acc AccessLevel) accessLevelValid() bool {
@@ -106,7 +127,7 @@ func (acc AccessLevel) accessLevelValid() bool {
 }
 
 func (cfg *apiConfig) allowedToAccess(w http.ResponseWriter, ctx context.Context, requiredLevel AccessLevel) bool {
-	user, err := cfg.dbQueries.GetUserByUserName(ctx, ctx.Value("userName").(string))
+	user, err := cfg.dbQueries.GetUserByUserName(ctx, ctx.Value(userNameKey).(string))
 	if err != nil {
 		log.Printf("Error in allowedToAccess: %v", err)
 		return false
@@ -365,28 +386,120 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expirationTime := time.Now().Add(24 * time.Hour)
-	claims := &Claims{
-		Username: creds.Username,
+	refreshTokenClaims := &RefreshClaims{
+		Username:  user.UserName,
+		TokenType: "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			ID:        uuid.NewString(),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(cfg.jwtKey)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, "Could not create token", err)
+	refreshToken, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshTokenClaims).SignedString(cfg.jwtKey)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Expires:  time.Now().Add(7 * 24 * time.Hour),
+		MaxAge:   7 * 24 * 3600,
+		HttpOnly: true,
+		Secure:   false, // requires https for true
+		// SameSite: http.SameSiteStrictMode,  // doesn't work for http/local dev
+		SameSite: http.SameSiteLaxMode,
+		Path:     "/public/refresh",
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+}
+
+type TokenResponse struct {
+	AccessToken string `json:"access_token"`
+}
+
+func (cfg *apiConfig) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// 1. Read refresh token from secure HttpOnly cookie
+	cookie, err := r.Cookie("refresh_token")
+	if err != nil {
+		http.Error(w, "Unauthorized: Missing refresh token", http.StatusUnauthorized)
+		return
+	}
+	refreshToken := cookie.Value
+
+	// 2. Validate token
+	claims, err := ValidateRefreshToken(refreshToken, []byte(cfg.jwtKey))
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "Unauthorized: Invalid token", nil)
+		return
+	}
+
+	// 3. Generate new short-lived access token
+	assessClaims := Claims{
+		Username: claims.Username,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute * 15)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	newAccessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, assessClaims).SignedString([]byte(cfg.jwtKey))
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error creating new access token", err)
+		return
+	}
+
+	// Optional: Rotate the refresh token by setting a new cookie here if needed
+
+	// 4. Send the new access token back to the frontend
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"token": tokenString,
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(TokenResponse{AccessToken: newAccessToken})
+}
+
+func ValidateRefreshToken(cookieStr string, secretKey []byte) (*RefreshClaims, error) {
+	claims := &RefreshClaims{}
+
+	// Layer 1: Verify Signature and Expiration
+	token, err := jwt.ParseWithClaims(cookieStr, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return secretKey, nil
 	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	// Layer 2: Explicit Type Check
+	if claims.TokenType != "refresh" {
+		return nil, fmt.Errorf("invalid token type")
+	}
+
+	// Layer 3: Database Blacklist / Revocation Check
+	// isRevoked, err := db.IsTokenRevoked(claims.ID) // Uses jti claim
+	// if err != nil || isRevoked {
+	//     return nil, fmt.Errorf("token has been revoked")
+	// }
+
+	return claims, nil
 }
 
 func (cfg *apiConfig) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.URL.Path == "auth/refresh" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 			RespondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -405,7 +518,7 @@ func (cfg *apiConfig) AuthMiddleware(next http.Handler) http.Handler {
 				RespondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
 				return
 			}
-			RespondWithError(w, http.StatusBadRequest, "Bad Request", nil)
+			RespondWithError(w, http.StatusBadRequest, "Bad Request", err)
 			return
 		}
 		if !token.Valid {
@@ -414,7 +527,7 @@ func (cfg *apiConfig) AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		parent := r.Context()
-		ctx := context.WithValue(parent, "userName", claims.Username)
+		ctx := context.WithValue(parent, userNameKey, claims.Username)
 		req := r.WithContext(ctx)
 		next.ServeHTTP(w, req)
 

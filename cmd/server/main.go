@@ -99,6 +99,7 @@ func main() {
 	privateMux.HandleFunc("/items", cfg.HandleGetItems).Methods("GET", "OPTIONS")
 	privateMux.HandleFunc("/items", cfg.HandleCreateItem).Methods("POST")
 
+	privateMux.HandleFunc("/transactions", cfg.HandleGetTransactions).Methods("GET", "OPTIONS")
 	privateMux.HandleFunc("/transactions", cfg.handleCreateTrans).Methods("POST")
 	privateMux.HandleFunc("/transactions/{transId}", cfg.handleGetTransById).Methods("GET")
 	privateMux.HandleFunc("/transactions/{transId}", cfg.handleAddItemTrans).Methods("POST")
@@ -197,6 +198,22 @@ func (cfg *apiConfig) HandleGetUsers(w http.ResponseWriter, req *http.Request) {
 	RespondWithJSON(w, 200, users)
 }
 
+func (cfg *apiConfig) HandleGetTransactions(w http.ResponseWriter, req *http.Request) {
+	if !cfg.allowedToAccess(w, req.Context(), AccessUser) {
+		return
+	}
+
+	var transactions []database.GetTransactionsRow
+
+	transactions, err := cfg.dbQueries.GetTransactions(req.Context())
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Error getting transactions", err)
+		return
+	}
+
+	RespondWithJSON(w, http.StatusOK, transactions)
+}
+
 func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, req *http.Request) {
 	if !cfg.allowedToAccess(w, req.Context(), AccessAssistant) {
 		return
@@ -279,7 +296,7 @@ func (cfg *apiConfig) HandleGetItems(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	RespondWithJSON(w, 200, items)
+	RespondWithJSON(w, http.StatusOK, items)
 }
 
 func (cfg *apiConfig) HandleGetItem(w http.ResponseWriter, req *http.Request) {
